@@ -404,3 +404,8 @@ TSWLatexianTemp*
 
 # Makeindex log files
 *.lpz
+
+# binary file to store NumPy array on disk
+*.npy
+# except the AWGN dataset
+!AWGN_DATASET.npy
