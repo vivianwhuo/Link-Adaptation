@@ -343,6 +343,7 @@ class UpperConfidenceBoundBandit(BaseConstrainedBandit):
         self.confidence_level = 2.0  # configurable
         self.num_pulls = np.zeros((nrof_rates, nrof_cqi))
         self.est_mean_rewards = np.zeros((nrof_rates, nrof_cqi))
+        self.alpha = 2.0  # configurable
         self.t = 0
 
     def act(self, cqi):
@@ -379,9 +380,47 @@ class UpperConfidenceBoundBandit(BaseConstrainedBandit):
         """t is the number of times the arm has been pulled."""
         if self.num_pulls[rate_index, cqi] == 0:
             return np.inf
-        return self.confidence_level * (np.sqrt(2 * np.log(self.t + 1) / self.num_pulls[rate_index, cqi]))
+        return self.confidence_level * (np.sqrt(self.alpha * np.log(self.t + 1) / self.num_pulls[rate_index, cqi]))
 
     def sample(self, rate_index, cqi):
         """Returns UCB reward, which is the sample mean plus uncertainty of the arm."""
         return self.est_mean_rewards[rate_index, cqi] + self.uncertainty(rate_index, cqi)
+
+class DiscountedUCBBandit(UpperConfidenceBoundBandit):
+    """
+    A variant of UCB algorithm that has constant discount.
+
+    Notes
+    -----
+    Original paper: "On Upper-Confidence Bound Policies for Non-Stationary Bandit Problems".
+    """
+    def __init__(self,
+                 nrof_rates,
+                 nrof_cqi,
+                 packet_sizes,
+                 gamma=0.9):
+        
+        super().__init__(nrof_rates, nrof_cqi, packet_sizes)
+        
+        self.discounted_pulls = np.zeros((nrof_rates, nrof_cqi))
+        self.discounted_rewards = np.zeros((nrof_rates, nrof_cqi))
+        self.gamma = gamma  # dicount factor
+
+    def update(self, rate_index, cqi, ack):
+        self.discounted_pulls *= self.gamma
+        self.discounted_rewards *= self.gamma
+
+        self.discounted_pulls[rate_index, cqi] += 1
+        self.discounted_rewards[rate_index, cqi] = (self.discounted_rewards[rate_index, cqi] * (self.discounted_pulls[rate_index, cqi] - 1) * self.gamma + (1 if ack else 0)) / self.discounted_pulls[rate_index, cqi]
+
+    def uncertainty(self, rate_index, cqi):
+        n_t_gamma = np.sum(self.discounted_pulls)
+        """t is the number of times the arm has been pulled."""
+        if self.discounted_pulls[rate_index, cqi] == 0:
+            return np.inf
+        return self.confidence_level * (np.sqrt(self.alpha * np.log(n_t_gamma) / self.discounted_pulls[rate_index, cqi]))
+
+    def sample(self, rate_index, cqi):
+        """Returns discounted UCB reward."""
+        return (self.discounted_rewards[rate_index, cqi] / self.discounted_pulls[rate_index, cqi]) + self.uncertainty(rate_index, cqi)
 
