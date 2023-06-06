@@ -28,10 +28,10 @@ class BaseConstrainedBandit():
     -----
     Original implementation: https://github.com/vidits-kth/bayesla-link-adaptation/blob/3dc0de63f98e7f94f6790f834064d3a63d867c04/source.py#L230
     '''
-    def __init__(self, 
-                 nrof_rates, 
+    def __init__(self,
+                 nrof_rates,
                  nrof_cqi,
-                 packet_sizes, 
+                 packet_sizes,
                  target_bler):
         
         solvers.options['show_progress'] = False
@@ -198,6 +198,7 @@ class TrackingThompsonSamplingBandit(BaseConstrainedBandit):
                  prior_bler=[],
                  prior_weight=100,
                  discount = 1):
+        """Setting `discount = 1` is equivalent to the ordinary Thompson sampling."""
         
         super().__init__(nrof_rates, nrof_cqi,packet_sizes, target_bler)
         
@@ -277,7 +278,7 @@ class DiscountThompsonSamplingBandit(BaseModelFreeBandit):
         super().__init__(nrof_rates, packet_sizes)
         self.discount = discount
 
-    def act(self):
+    def act(self, cqi):
         """
         Determines which arm to be pulled.
 
@@ -285,7 +286,9 @@ class DiscountThompsonSamplingBandit(BaseModelFreeBandit):
         where `a = 1 + self.ack_count[rate_index]`
         and   `b = 1 + self.nack_count[rate_index]`.
 
-        Note that CQI is not used.
+        Parameters
+        ----------
+        cqi: Unused
         """
         sampled_success_prob = [ np.random.beta(1 + self.ack_count[rate_index], 
                                                 1 + self.nack_count[rate_index] ) 
@@ -296,6 +299,14 @@ class DiscountThompsonSamplingBandit(BaseModelFreeBandit):
         return np.argmax(expected_rewards)
 
     def update(self, rate_index, cqi, ack):
+        """
+        Parameters
+        ----------
+        rate_index: int
+            The index of the arm that is pulled.
+        cqi: Unused
+        ack: bool
+        """
         # for r in range(self.nrof_rates):
         #     self.ack_count[r] = self.discount * self.ack_count[r]
         #     self.nack_count[r] = self.discount * self.nack_count[r]
@@ -306,3 +317,71 @@ class DiscountThompsonSamplingBandit(BaseModelFreeBandit):
         # only discount the arm that is pulled
         self.ack_count[rate_index] = self.discount * self.ack_count[rate_index] + (1 if ack else 0)
         self.nack_count[rate_index] = self.discount * self.nack_count[rate_index] + (0 if ack else 1)
+
+def random_argmax(value_list):
+    """
+    Returns the index of the largest value in the supplied list.
+    If there are multiple indices, returns any (instead of first, as in `np.argmax`) one of them randomly.
+    
+    Notes
+    -----
+    Original implementation: https://github.com/WhatIThinkAbout/BabyRobot/blob/cc6f00538ab21bbc69d94dbf0d8b2a26dcc5f11e/Multi_Armed_Bandits/PowerSocketSystem.py#L40
+    """
+    values = np.asarray(value_list)
+    return np.argmax(np.random.random(values.shape) * (values==values.max()))
+
+class UpperConfidenceBoundBandit(BaseConstrainedBandit):
+    """
+    Upper Confidence Bound (UCB1) algorithm.
+    """
+    def __init__(self,
+                 nrof_rates,
+                 nrof_cqi,
+                 packet_sizes):
+        
+        super().__init__(nrof_rates, nrof_cqi, packet_sizes, target_bler=0)
+        self.confidence_level = 2.0  # configurable
+        self.num_pulls = np.zeros((nrof_rates, nrof_cqi))
+        self.est_mean_rewards = np.zeros((nrof_rates, nrof_cqi))
+        self.t = 0
+
+    def act(self, cqi):
+        """
+        Determines which arm to be pulled.
+
+        Play machine that maximizes mean expected reward plus uncertainty bonus.
+
+        Parameters
+        ----------
+        cqi: Unused
+
+        Notes
+        -----
+        UCB1 has logarithmic regret in finite-time.
+        """
+        # UCB1 requires playing each arm as initialization
+        # if self.t < self.num_arms:
+        #     # randomly pulls one unplayed arm
+        #     return random_argmin(self.num_pulls)
+        # else:
+        #     return random_argmax(self.expected_rewards)
+        return random_argmax([self.sample(r, cqi) for r in range(self.nrof_rates)])
+
+    def update(self, rate_index, cqi, ack):
+        # increment number of pulls
+        self.num_pulls[rate_index, cqi] += 1
+
+        # update mean reward estimate
+        self.est_mean_rewards[rate_index, cqi] = (1 - 1.0/self.num_pulls[rate_index, cqi]) * self.est_mean_rewards[rate_index, cqi]
+        + (1.0/self.num_pulls[rate_index, cqi]) * ack
+
+    def uncertainty(self, rate_index, cqi):
+        """t is the number of times the arm has been pulled."""
+        if self.num_pulls[rate_index, cqi] == 0:
+            return np.inf
+        return self.confidence_level * (np.sqrt(2 * np.log(self.t + 1) / self.num_pulls[rate_index, cqi]))
+
+    def sample(self, rate_index, cqi):
+        """Returns UCB reward, which is the sample mean plus uncertainty of the arm."""
+        return self.est_mean_rewards[rate_index, cqi] + self.uncertainty(rate_index, cqi)
+
