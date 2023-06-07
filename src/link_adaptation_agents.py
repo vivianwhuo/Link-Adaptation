@@ -201,6 +201,7 @@ class TrackingThompsonSamplingBandit(BaseConstrainedBandit):
         """Setting `discount = 1` is equivalent to the ordinary Thompson sampling."""
         
         super().__init__(nrof_rates, nrof_cqi,packet_sizes, target_bler)
+        self.discount = discount
         
         # Exploit prior knowledge
         if not prior_bler == []:  
@@ -333,24 +334,30 @@ def random_argmax(value_list):
 class UpperConfidenceBoundBandit(BaseConstrainedBandit):
     """
     Upper Confidence Bound (UCB1) algorithm.
+
+    Notes
+    -----
+    The default values are empirically tested.
     """
     def __init__(self,
                  nrof_rates,
                  nrof_cqi,
-                 packet_sizes):
+                 packet_sizes,
+                 confidence_level=1.4,
+                 alpha=0.5):
         
         super().__init__(nrof_rates, nrof_cqi, packet_sizes, target_bler=0)
-        self.confidence_level = 2.0  # configurable
+        self.confidence_level = confidence_level
+        self.alpha = alpha
         self.num_pulls = np.zeros((nrof_rates, nrof_cqi))
-        self.est_mean_rewards = np.zeros((nrof_rates, nrof_cqi))
-        self.alpha = 2.0  # configurable
+        self.emp_mean = np.zeros((nrof_rates, nrof_cqi))  # empirical mean
         self.t = 0
 
     def act(self, cqi):
         """
         Determines which arm to be pulled.
 
-        Play machine that maximizes mean expected reward plus uncertainty bonus.
+        Play machine that maximizes empirical mean plus uncertainty bonus.
 
         Parameters
         ----------
@@ -361,11 +368,7 @@ class UpperConfidenceBoundBandit(BaseConstrainedBandit):
         UCB1 has logarithmic regret in finite-time.
         """
         # UCB1 requires playing each arm as initialization
-        # if self.t < self.num_arms:
-        #     # randomly pulls one unplayed arm
-        #     return random_argmin(self.num_pulls)
-        # else:
-        #     return random_argmax(self.expected_rewards)
+        # This is handled by setting infinite uncertainty at the start
         return random_argmax([self.sample(r, cqi) for r in range(self.nrof_rates)])
 
     def update(self, rate_index, cqi, ack):
@@ -373,18 +376,22 @@ class UpperConfidenceBoundBandit(BaseConstrainedBandit):
         self.num_pulls[rate_index, cqi] += 1
 
         # update mean reward estimate
-        self.est_mean_rewards[rate_index, cqi] = (1 - 1.0/self.num_pulls[rate_index, cqi]) * self.est_mean_rewards[rate_index, cqi]
+        self.emp_mean[rate_index, cqi] = (1 - 1.0/self.num_pulls[rate_index, cqi]) * self.emp_mean[rate_index, cqi]
         + (1.0/self.num_pulls[rate_index, cqi]) * ack
 
     def uncertainty(self, rate_index, cqi):
-        """t is the number of times the arm has been pulled."""
+        """
+        Uncertainty added to the empirical mean. Also known as padding function.
+        Takes the form `b * sqrt(alpha * log(t) / n_i)`.
+        n_i is the number of times the arm i has been pulled.
+        """
         if self.num_pulls[rate_index, cqi] == 0:
             return np.inf
         return self.confidence_level * (np.sqrt(self.alpha * np.log(self.t + 1) / self.num_pulls[rate_index, cqi]))
 
     def sample(self, rate_index, cqi):
         """Returns UCB reward, which is the sample mean plus uncertainty of the arm."""
-        return self.est_mean_rewards[rate_index, cqi] + self.uncertainty(rate_index, cqi)
+        return self.emp_mean[rate_index, cqi] + self.uncertainty(rate_index, cqi)
 
 class DiscountedUCBBandit(UpperConfidenceBoundBandit):
     """
@@ -398,29 +405,37 @@ class DiscountedUCBBandit(UpperConfidenceBoundBandit):
                  nrof_rates,
                  nrof_cqi,
                  packet_sizes,
+                 confidence_level=2.0,
+                 alpha=2.0,
                  gamma=0.9):
         
-        super().__init__(nrof_rates, nrof_cqi, packet_sizes)
+        super().__init__(nrof_rates, nrof_cqi, packet_sizes, confidence_level, alpha)
         
         self.discounted_pulls = np.zeros((nrof_rates, nrof_cqi))
         self.discounted_rewards = np.zeros((nrof_rates, nrof_cqi))
-        self.gamma = gamma  # dicount factor
+        self.gamma = gamma  # discount factor
+
+    def act(self, cqi):
+        return random_argmax([self.sample(r, cqi) for r in range(self.nrof_rates)])
 
     def update(self, rate_index, cqi, ack):
-        self.discounted_pulls *= self.gamma
-        self.discounted_rewards *= self.gamma
+        # discount and increment number of pulls
+        # self.discounted_pulls *= self.gamma
+        prev_pulls = self.discounted_pulls[rate_index, cqi]
+        self.discounted_pulls[rate_index, cqi] = self.gamma * prev_pulls + 1
 
-        self.discounted_pulls[rate_index, cqi] += 1
-        self.discounted_rewards[rate_index, cqi] = (self.discounted_rewards[rate_index, cqi] * (self.discounted_pulls[rate_index, cqi] - 1) * self.gamma + (1 if ack else 0)) / self.discounted_pulls[rate_index, cqi]
+        # self.discounted_rewards *= self.gamma
+        # self.discounted_rewards[rate_index, cqi] = (self.discounted_rewards[rate_index, cqi] * (self.discounted_pulls[rate_index, cqi] - 1) * self.gamma + (1 if ack else 0)) / self.discounted_pulls[rate_index, cqi]
+        self.discounted_rewards[rate_index, cqi] = (prev_pulls / self.discounted_pulls[rate_index, cqi]) * self.discounted_rewards[rate_index, cqi] + (1.0/self.discounted_pulls[rate_index, cqi]) * ack
 
     def uncertainty(self, rate_index, cqi):
         n_t_gamma = np.sum(self.discounted_pulls)
-        """t is the number of times the arm has been pulled."""
         if self.discounted_pulls[rate_index, cqi] == 0:
             return np.inf
         return self.confidence_level * (np.sqrt(self.alpha * np.log(n_t_gamma) / self.discounted_pulls[rate_index, cqi]))
 
     def sample(self, rate_index, cqi):
         """Returns discounted UCB reward."""
-        return (self.discounted_rewards[rate_index, cqi] / self.discounted_pulls[rate_index, cqi]) + self.uncertainty(rate_index, cqi)
+        # return (self.discounted_rewards[rate_index, cqi] / self.discounted_pulls[rate_index, cqi]) + self.uncertainty(rate_index, cqi)
+        return self.discounted_rewards[rate_index, cqi] + self.uncertainty(rate_index, cqi)
 
