@@ -425,9 +425,6 @@ class DiscountedUCBBandit(UpperConfidenceBoundBandit):
         super().__init__(nrof_rates, nrof_cqi, packet_sizes, confidence_level, alpha)
         self.gamma = gamma  # discount factor
 
-    def act(self, cqi):
-        return random_argmax([self.sample(r, cqi) for r in range(self.nrof_rates)])
-
     def update(self, rate_index, cqi, ack):
         # discount and increment number of pulls
         prev_pulls = self.pulls[rate_index, cqi]
@@ -441,7 +438,79 @@ class DiscountedUCBBandit(UpperConfidenceBoundBandit):
             return 1  # initial confidence interval
         return self.confidence_level * (np.sqrt(self.alpha * np.log(n_t_gamma) / self.pulls[rate_index, cqi]))
 
-    def sample(self, rate_index, cqi):
-        """Returns discounted UCB reward."""
-        return self.mu[rate_index, cqi] + self.uncertainty(rate_index, cqi)
+class VariableDiscountedUCBBandit(UpperConfidenceBoundBandit):
+    """
+    A variant of UCB algorithm that has variable discount across arms.
+    
+    Notes
+    -----
+    Original paper: "A Multi-Armed Bandit Model for Non-Stationary Wireless Network Selection".
+    """
+    def __init__(self,
+                 nrof_rates,
+                 nrof_cqi,
+                 packet_sizes,
+                 confidence_level=2.0,
+                 alpha=2.0,
+                 gamma=0.9,
+                 m0=5,
+                 m1=5,
+                 gamma_min=0.05,
+                 gamma_max=0.95,
+                 gamma_step=0.05):
+        
+        super().__init__(nrof_rates, nrof_cqi, packet_sizes, confidence_level, alpha)
+        self.m0 = m0
+        self.m1 = m1
+        self.gamma_min = gamma_min
+        self.gamma_max = gamma_max
+        self.gamma_step = gamma_step
+        # for now, same initial discount factor for all arms
+        self.gammas = np.ones((nrof_rates, nrof_cqi)) * gamma
 
+        # TODO: (low priority) improve runtime and memory efficiency.
+        # current implementation for checking error sign: store all error signs for all arms
+        # time: O(max(m0, m1))
+        # space: O(r * c * max(m0, m1))
+        self.error_signs = {}
+        for r in range(self.nrof_rates):
+            for c in range(self.nrof_cqi):
+                # initialize as empty list
+                self.error_signs[r, c] = []  # 1 if positive, -1 if negative
+
+    def update(self, rate_index, cqi, ack):
+        # discount and increment number of pulls
+        for r in range(self.nrof_rates):
+            for c in range(self.nrof_cqi):
+                prev_pulls = self.pulls[r, c]
+                self.pulls[r, c] = self.gammas[r, c] * prev_pulls + 1
+
+                self.mu[r, c] = (prev_pulls / self.pulls[r, c]) * self.mu[r, c] * self.gammas[r, c] + (1.0/self.pulls[r, c]) * ack
+
+        # compute and store the error sign for current arm
+        error = ack - self.mu[rate_index, cqi]
+        sign = 1 if error >= 0 else -1
+        self.error_signs[rate_index, cqi].append(sign)
+
+        if len(self.error_signs[rate_index, cqi]) > max(self.m0, self.m1):
+            self.error_signs[rate_index, cqi].pop(0)  # avoid list too large
+
+        # decrease memory
+        consecutive_same_signs = 0
+        for i in range(min(self.m1, len(self.error_signs[rate_index, cqi]))):
+            if self.error_signs[rate_index, cqi][-i] == sign:
+                consecutive_same_signs += 1
+            else:
+                break
+        if consecutive_same_signs >= self.m1 and self.gammas[rate_index, cqi] > self.gamma_min:
+            self.gammas[rate_index, cqi] -= self.gamma_step
+        
+        # increase memory
+        consecutive_alternate_signs = 1  # note different init and range
+        for i in range(min(self.m0, len(self.error_signs[rate_index, cqi])) - 1):
+            if self.error_signs[rate_index, cqi][-i-1] != self.error_signs[rate_index, cqi][-i]:
+                consecutive_alternate_signs += 1
+            else:
+                break
+        if consecutive_alternate_signs >= self.m0 and self.gammas[rate_index, cqi] < self.gamma_max:
+            self.gammas[rate_index, cqi] += self.gamma_step
