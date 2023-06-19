@@ -47,12 +47,15 @@ class BaseConstrainedBandit():
         self.ack_count  = np.zeros( ( nrof_rates, nrof_cqi ) )
         self.nack_count = np.zeros( ( nrof_rates, nrof_cqi ) )
 
+        self.t = 0
+
     def act(self, cqi): # Implemented in child classes
         """Determines which arm to be pulled."""
         pass
 
     def update(self, rate_index, cqi, ack):  
         """Updates the bandit."""
+        self.t += 1  # increment time step
         if ack:
             self.ack_count[ rate_index, cqi ] += 1
         else:
@@ -320,18 +323,6 @@ class DiscountThompsonSamplingBandit(BaseModelFreeBandit):
         self.ack_count[rate_index] = self.discount * self.ack_count[rate_index] + (1 if ack else 0)
         self.nack_count[rate_index] = self.discount * self.nack_count[rate_index] + (0 if ack else 1)
 
-def random_argmax(value_list):
-    """
-    Returns the index of the largest value in the supplied list.
-    If there are multiple indices, returns any (instead of first, as in `np.argmax`) one of them randomly.
-    
-    Notes
-    -----
-    Original implementation: https://github.com/WhatIThinkAbout/BabyRobot/blob/cc6f00538ab21bbc69d94dbf0d8b2a26dcc5f11e/Multi_Armed_Bandits/PowerSocketSystem.py#L40
-    """
-    values = np.asarray(value_list)
-    return np.argmax(np.random.random(values.shape) * (values==values.max()))
-
 class UpperConfidenceBoundBandit(BaseConstrainedBandit):
     """
     Upper Confidence Bound (UCB1) algorithm.
@@ -346,64 +337,55 @@ class UpperConfidenceBoundBandit(BaseConstrainedBandit):
         Number of pulls for each arm.
     mu: np.ndarray
         Empirical mean reward for each arm.
-    t: int
-        Number of pulls so far. Starts from 0.
 
-    Notes
-    -----
-    The default values are empirically tested.
     """
     def __init__(self,
                  nrof_rates,
                  nrof_cqi,
                  packet_sizes,
-                 confidence_level=2.0,
-                 alpha=2.0):
+                 confidence_level=1.0,
+                 alpha=1.0):
         
         super().__init__(nrof_rates, nrof_cqi, packet_sizes, target_bler=0.1)
         self.confidence_level = confidence_level
         self.alpha = alpha
-        self.pulls = np.zeros((nrof_rates, nrof_cqi))  # number of pulls for each arm
-        self.mu = np.zeros((nrof_rates, nrof_cqi))  # empirical mean reward for each arm
-        self.t = 0
+        # self.pulls = np.zeros((nrof_rates, nrof_cqi))  # number of pulls for each arm
+        self.pulls = np.zeros(nrof_rates)  # number of pulls for each arm
 
     def act(self, cqi):
         """
-        Determines which arm to be pulled.
-
-        Play machine that maximizes empirical mean plus uncertainty bonus.
-
-        Parameters
-        ----------
-        cqi: Unused
+        Determines which arm to be pulled. Plays machine that maximizes empirical mean plus uncertainty bonus.
 
         Notes
         -----
         UCB1 has logarithmic regret in finite-time.
         """
-        return random_argmax([self.sample(r, cqi) for r in range(self.nrof_rates)])
+        # TODO: for now, ignore cqi as arm
+        estimate_success_prob = [self.ack_count[rate_index, cqi] /
+                   (self.ack_count[rate_index, cqi] + self.nack_count[rate_index, cqi])
+                   for rate_index in range(self.nrof_rates)]
+        expected_rewards = np.array([(s * rew) for s, rew in zip(estimate_success_prob, self.packet_sizes)])
+        radius = np.array([self.uncertainty(r) for r in range(self.nrof_rates)])
+        f = expected_rewards + self.confidence_level * radius
+        return np.argmax(f)
 
     def update(self, rate_index, cqi, ack):
-        # increment number of pulls
-        self.pulls[rate_index, cqi] += 1
+        # increment ack, nack and number of pulls
+        super().update(rate_index, cqi, ack)  # increment ack and nack
+        # self.pulls[rate_index, cqi] += 1
+        self.pulls[rate_index] += 1
 
-        # update mean reward estimate
-        self.mu[rate_index, cqi] = (1 - 1.0/self.pulls[rate_index, cqi]) * self.mu[rate_index, cqi]
-        + (1.0/self.pulls[rate_index, cqi]) * ack
-
-    def uncertainty(self, rate_index, cqi):
+    # def uncertainty(self, rate_index, cqi):
+    def uncertainty(self, rate_index):
         """
         Uncertainty added to the empirical mean. Also known as padding function.
         Takes the form `b * sqrt(alpha * log(t) / n_i)`.
         n_i is the number of times the arm i has been pulled.
         """
-        if self.pulls[rate_index, cqi] == 0:
+        # if self.pulls[rate_index, cqi] == 0:
+        if self.pulls[rate_index] == 0:
             return 1  # initial confidence interval
-        return self.confidence_level * (np.sqrt(self.alpha * np.log(self.t + 1) / self.pulls[rate_index, cqi]))
-
-    def sample(self, rate_index, cqi):
-        """Returns UCB reward, which is the sample mean plus uncertainty of the arm."""
-        return self.mu[rate_index, cqi] + self.uncertainty(rate_index, cqi)
+        return np.sqrt(self.alpha * np.log(self.t + 1) / self.pulls[rate_index])
 
 class DiscountedUCBBandit(UpperConfidenceBoundBandit):
     """
@@ -424,7 +406,12 @@ class DiscountedUCBBandit(UpperConfidenceBoundBandit):
                  gamma=0.9):
         
         super().__init__(nrof_rates, nrof_cqi, packet_sizes, confidence_level, alpha)
+        self.pulls = np.zeros((nrof_rates, nrof_cqi))  # number of pulls for each arm
+        self.mu = np.zeros((nrof_rates, nrof_cqi))  # empirical mean reward for each arm
         self.gamma = gamma  # discount factor
+
+    def act(self, cqi):
+        return np.argmax([self.sample(r, cqi) for r in range(self.nrof_rates)])
 
     def update(self, rate_index, cqi, ack):
         # discount and increment number of pulls
@@ -438,6 +425,10 @@ class DiscountedUCBBandit(UpperConfidenceBoundBandit):
         if self.pulls[rate_index, cqi] == 0:
             return 1  # initial confidence interval
         return self.confidence_level * (np.sqrt(self.alpha * np.log(n_t_gamma) / self.pulls[rate_index, cqi]))
+
+    def sample(self, rate_index, cqi):
+        """Returns UCB reward, which is the sample mean plus uncertainty of the arm."""
+        return self.mu[rate_index, cqi] + self.uncertainty(rate_index, cqi)
 
 class VariableDiscountedUCBBandit(UpperConfidenceBoundBandit):
     """
@@ -461,6 +452,8 @@ class VariableDiscountedUCBBandit(UpperConfidenceBoundBandit):
                  gamma_step=0.05):
         
         super().__init__(nrof_rates, nrof_cqi, packet_sizes, confidence_level, alpha)
+        self.pulls = np.zeros((nrof_rates, nrof_cqi))  # number of pulls for each arm
+        self.mu = np.zeros((nrof_rates, nrof_cqi))  # empirical mean reward for each arm
         self.m0 = m0
         self.m1 = m1
         self.gamma_min = gamma_min
@@ -478,6 +471,9 @@ class VariableDiscountedUCBBandit(UpperConfidenceBoundBandit):
             for c in range(self.nrof_cqi):
                 # initialize as empty list
                 self.error_signs[r, c] = []  # 1 if positive, -1 if negative
+
+    def act(self, cqi):
+        return np.argmax([self.sample(r, cqi) for r in range(self.nrof_rates)])
 
     def update(self, rate_index, cqi, ack):
         # discount and increment number of pulls
@@ -515,3 +511,17 @@ class VariableDiscountedUCBBandit(UpperConfidenceBoundBandit):
                 break
         if consecutive_alternate_signs >= self.m0 and self.gammas[rate_index, cqi] < self.gamma_max:
             self.gammas[rate_index, cqi] += self.gamma_step
+
+    def uncertainty(self, rate_index, cqi):
+        """
+        Uncertainty added to the empirical mean. Also known as padding function.
+        Takes the form `b * sqrt(alpha * log(t) / n_i)`.
+        n_i is the number of times the arm i has been pulled.
+        """
+        if self.pulls[rate_index, cqi] == 0:
+            return 1  # initial confidence interval
+        return self.confidence_level * (np.sqrt(self.alpha * np.log(self.t + 1) / self.pulls[rate_index, cqi]))
+
+    def sample(self, rate_index, cqi):
+        """Returns UCB reward, which is the sample mean plus uncertainty of the arm."""
+        return self.mu[rate_index, cqi] + self.uncertainty(rate_index, cqi)
