@@ -81,6 +81,7 @@ class BaseModelFreeBandit():
         """
         Updates the bandit. CQI is unused. It is only for compatibility with the other bandits.
         """
+        self.t += 1  # increment time step
         if ack:
             self.ack_count[rate_index] += 1
         else:
