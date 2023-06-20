@@ -52,7 +52,7 @@ class BaseConstrainedBandit():
     def init_ack_by_prior(self, prior_bler, prior_weight=100):
         """Called in self.__init__() by child classes that takes in `prior_bler` and uses `ack_count` and `nack_count`."""
         # Exploit prior knowledge
-        if not prior_bler == []:  
+        if not prior_bler == []:
             for cqi in range( prior_bler.shape[1] ):
                 for rate_index in range(self.nrof_rates):                    
                     prior_mu = 1.0 - prior_bler[rate_index, cqi]
@@ -335,10 +335,12 @@ class UpperConfidenceBoundBandit(BaseConstrainedBandit):
                  prior_bler=[],
                  prior_weight=100,
                  confidence_level=1.0,
-                 alpha=1.0):
+                 alpha=1.0,
+                 init_ack=True):
         
         super().__init__(nrof_rates, nrof_cqi, packet_sizes, target_bler=0.1)
-        super().init_ack_by_prior(prior_bler, prior_weight)
+        if init_ack:
+            self.init_ack_by_prior(prior_bler, prior_weight)
         self.confidence_level = confidence_level
         self.alpha = alpha
         self.pulls = np.zeros((nrof_rates, nrof_cqi))  # number of pulls for each arm
@@ -511,3 +513,61 @@ class VariableDiscountedUCBBandit(UpperConfidenceBoundBandit):
     def sample(self, rate_index, cqi):
         """Returns UCB reward, which is the sample mean plus uncertainty of the arm."""
         return self.mu[rate_index, cqi] + self.uncertainty(rate_index, cqi)
+
+class SlidingWindowUCBBandit(UpperConfidenceBoundBandit):
+    """
+    A variant of the UCB algorithm that uses a sliding window to estimate the empirical mean of the rewards.
+
+    Notes
+    -----
+    Original paper: "On Upper-Confidence Bound Policies for Non-Stationary Bandit Problems".
+    """
+
+    def __init__(self,
+                 nrof_rates,
+                 nrof_cqi,
+                 packet_sizes,
+                 prior_bler=[],
+                 prior_weight=100,
+                 confidence_level=1.0,
+                 alpha=1.0,
+                 window_size=100):
+        """Note: window_size should be greater than the prior size."""
+        super().__init__(nrof_rates, nrof_cqi, packet_sizes, confidence_level, alpha, init_ack=False)
+
+        self.window_size = window_size
+
+        # unlike np arrays, ack_list needs to be accesses with two indices (not a 2-tuple index)
+        self.ack_list = {r: {c: [] for c in range(nrof_cqi)} for r in range(nrof_rates)}
+        # important: not parent method
+        self.init_ack_by_prior(prior_bler, prior_weight)
+
+    def init_ack_by_prior(self, prior_bler, prior_weight):
+        """Initialize the ack_list with the prior bler."""
+        # Exploit prior knowledge
+        if not prior_bler == []:
+            for cqi in range( prior_bler.shape[1] ):
+                for rate_index in range(self.nrof_rates):                    
+                    prior_mu = 1.0 - prior_bler[rate_index, cqi]
+                    self.pulls[rate_index, cqi] = min(prior_weight, self.window_size)
+                    self.ack_list[rate_index][cqi] = [1 if np.random.rand() < prior_mu else 0 for _ in range(int(self.pulls[rate_index, cqi]))]
+
+    def act(self, cqi):
+        estimate_success_prob = [np.mean(self.ack_list[rate_index][cqi]) for rate_index in range(self.nrof_rates)]
+        expected_rewards = np.array([(s * rew) for s, rew in zip(estimate_success_prob, self.packet_sizes)])
+        radius = np.array([self.uncertainty(r, cqi) for r in range(self.nrof_rates)])
+        f = expected_rewards + self.confidence_level * radius
+        return np.argmax(f)
+
+    def update(self, rate_index, cqi, ack):
+        if self.pulls[rate_index, cqi] < self.window_size:
+            self.pulls[rate_index, cqi] += 1
+        else:
+            self.ack_list[rate_index][cqi].pop(0)
+        
+        self.ack_list[rate_index][cqi].append(ack)
+
+    def uncertainty(self, rate_index, cqi):
+        if self.pulls[rate_index, cqi] == 0:
+            return 1
+        return np.sqrt(self.alpha * np.log(min(self.t + 1, self.window_size)) / self.pulls[rate_index, cqi])
