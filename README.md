@@ -1,5 +1,5 @@
 # Link Adaptation
-This repository contains the simulation code for the industrial project "Ultra-Reliable and Low Latency Communications in 5G Networks".
+This repository contains the simulation code for the industrial project
 
 ## Dependencies
 
