@@ -13,7 +13,7 @@ from cvxopt import matrix, solvers
 from .channel_quality_index import estimate_sinr_from_cqi, determine_bler_at_sinr
 
 class BaseConstrainedBandit():
-    '''
+    """
     Base Constrained Bandit. Our implementation accepts `nrof_cqi` as an extra parameter.
 
     Parameters
@@ -27,7 +27,7 @@ class BaseConstrainedBandit():
     Notes
     -----
     Original implementation: https://github.com/vidits-kth/bayesla-link-adaptation/blob/3dc0de63f98e7f94f6790f834064d3a63d867c04/source.py#L230
-    '''
+    """
     def __init__(self,
                  nrof_rates,
                  nrof_cqi,
@@ -48,6 +48,16 @@ class BaseConstrainedBandit():
         self.nack_count = np.zeros( ( nrof_rates, nrof_cqi ) )
 
         self.t = 0
+
+    def init_ack_by_prior(self, prior_bler, prior_weight=100):
+        """Called in self.__init__() by child classes that takes in `prior_bler` and uses `ack_count` and `nack_count`."""
+        # Exploit prior knowledge
+        if not prior_bler == []:  
+            for cqi in range( prior_bler.shape[1] ):
+                for rate_index in range(self.nrof_rates):                    
+                    prior_mu = 1.0 - prior_bler[rate_index, cqi]
+                    self.ack_count[rate_index, cqi] = int( prior_weight * ( prior_mu  ) )
+                    self.nack_count[rate_index, cqi] = int( prior_weight * ( 1.0 - prior_mu ) )
 
     def act(self, cqi): # Implemented in child classes
         """Determines which arm to be pulled."""
@@ -91,7 +101,7 @@ class BaseModelFreeBandit():
             self.nack_count[rate_index] += 1
 
 class ThompsonSamplingBandit(BaseConstrainedBandit):
-    '''
+    """
     Thompson Sampling Bandit. Provides:
     (i) Unimodal Thompson sampling (UTS)
     (ii) Constrained Thompson sampling (Con-TS)
@@ -110,7 +120,7 @@ class ThompsonSamplingBandit(BaseConstrainedBandit):
     Notes
     -----
     Original implementation: https://github.com/vidits-kth/bayesla-link-adaptation/blob/3dc0de63f98e7f94f6790f834064d3a63d867c04/source.py#L273
-    '''
+    """
     def __init__(self, 
                  nrof_rates, 
                  nrof_cqi,
@@ -120,14 +130,7 @@ class ThompsonSamplingBandit(BaseConstrainedBandit):
                  prior_weight=100):
 
         super().__init__(nrof_rates, nrof_cqi, packet_sizes, target_bler)
-
-        # Exploit prior knowledge
-        if not prior_bler == []:  
-            for cqi in range( prior_bler.shape[1] ):
-                for rate_index in range(self.nrof_rates):                    
-                    prior_mu = 1.0 - prior_bler[rate_index, cqi]
-                    self.ack_count[rate_index, cqi] = int( prior_weight * ( prior_mu  ) )
-                    self.nack_count[rate_index, cqi] = int( prior_weight * ( 1.0 - prior_mu ) )
+        super().init_ack_by_prior(prior_bler, prior_weight)
 
     def act(self, cqi):
         """
@@ -146,7 +149,7 @@ class ThompsonSamplingBandit(BaseConstrainedBandit):
         return np.argmax(expected_rewards)
 
 class OuterLoopLinkAdaptation(BaseConstrainedBandit):
-    '''
+    """
     Outer Loop Link Adaptation: Bandit-like interface for OLLA.
     
     Parameters
@@ -161,7 +164,7 @@ class OuterLoopLinkAdaptation(BaseConstrainedBandit):
     Notes
     -----
     Original implementation: https://github.com/vidits-kth/bayesla-link-adaptation/blob/3dc0de63f98e7f94f6790f834064d3a63d867c04/source.py#L312
-    '''
+    """
     def __init__(self, 
                  nrof_rates,
                  nrof_cqi,
@@ -205,6 +208,7 @@ class TrackingThompsonSamplingBandit(BaseConstrainedBandit):
         """Setting `discount = 1` is equivalent to the ordinary Thompson sampling."""
         
         super().__init__(nrof_rates, nrof_cqi,packet_sizes, target_bler)
+        super().init_ack_by_prior(prior_bler, prior_weight)
         self.discount = discount
         
         # Exploit prior knowledge
@@ -251,15 +255,8 @@ class UnimodalThompsonsampling(BaseConstrainedBandit):
                  prior_weight=100):
         
         super().__init__(nrof_rates, packet_sizes, target_bler)
+        super().init_ack_by_prior(prior_bler, prior_weight)
         
-        # Exploit prior knowledge
-        if not prior_bler == []:  
-            for cqi in range( prior_bler.shape[1] ):
-                for rate_index in range(self.nrof_rates):                    
-                    prior_mu = 1.0 - prior_bler[rate_index, cqi]
-                    self.ack_count[rate_index, cqi] = int( prior_weight * ( prior_mu  ) )
-                    self.nack_count[rate_index, cqi] = int( prior_weight * ( 1.0 - prior_mu ) )
-
     def act(self, cqi):
         
         # Sample a success probability from beta distribution Beta(a, b)
@@ -343,10 +340,13 @@ class UpperConfidenceBoundBandit(BaseConstrainedBandit):
                  nrof_rates,
                  nrof_cqi,
                  packet_sizes,
+                 prior_bler=[],
+                 prior_weight=100,
                  confidence_level=1.0,
                  alpha=1.0):
         
         super().__init__(nrof_rates, nrof_cqi, packet_sizes, target_bler=0.1)
+        super().init_ack_by_prior(prior_bler, prior_weight)
         self.confidence_level = confidence_level
         self.alpha = alpha
         self.pulls = np.zeros((nrof_rates, nrof_cqi))  # number of pulls for each arm
