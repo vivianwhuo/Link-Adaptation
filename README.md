@@ -1,5 +1,5 @@
 # Link Adaptation
-This repository contains the simulation code for the industrial project
+This repository contains the simulation code for the industrial project.
 
 ## Dependencies
 
