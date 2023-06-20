@@ -210,14 +210,6 @@ class TrackingThompsonSamplingBandit(BaseConstrainedBandit):
         super().__init__(nrof_rates, nrof_cqi,packet_sizes, target_bler)
         super().init_ack_by_prior(prior_bler, prior_weight)
         self.discount = discount
-        
-        # Exploit prior knowledge
-        if not prior_bler == []:  
-            for cqi in range( prior_bler.shape[1] ):
-                for rate_index in range(self.nrof_rates):                    
-                    prior_mu = 1.0 - prior_bler[rate_index, cqi]
-                    self.ack_count[rate_index, cqi] = int( prior_weight * ( prior_mu  ) )
-                    self.nack_count[rate_index, cqi] = int( prior_weight * ( 1.0 - prior_mu ) )
 
     def act(self, cqi):
         
@@ -405,7 +397,6 @@ class DiscountedUCBBandit(UpperConfidenceBoundBandit):
         self.gamma = gamma  # discount factor
 
     def act(self, cqi):
-        # ignore CQI now
         expected_rewards = np.array([(s * rew) for s, rew in zip(self.mu[:, cqi], self.packet_sizes)])
         radius = np.array([self.uncertainty(r, cqi) for r in range(self.nrof_rates)])
         f = expected_rewards + self.confidence_level * radius
